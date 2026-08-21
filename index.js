@@ -7,6 +7,9 @@ const {
     PermissionFlagsBits
 } = require("discord.js");
 
+const fs = require("fs");
+const path = require("path");
+
 require("dotenv").config();
 
 // ======================================================
@@ -17,20 +20,81 @@ const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
 
-// Kanał logów wypłat na serwerze SW
+// Kanał logów na serwerze SW
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID || "";
 
 // Webhook na GŁÓWNYM serwerze wypłat
 const PAYOUT_WEBHOOK_URL =
     process.env.PAYOUT_WEBHOOK_URL || "";
 
-// Godzina niedzielnej wypłaty
-// 12:00 czasu polskiego
+// Niedziela, godzina wypłaty
 const PAYOUT_HOUR = 12;
 const PAYOUT_MINUTE = 0;
 
 // ======================================================
-// STAWKI
+// PLIK DANYCH
+// ======================================================
+
+const DATA_FILE = path.join(__dirname, "payout-data.json");
+
+const DEFAULT_DATA = {
+    payouts: [],
+    webhookMessageId: null,
+    lastAutomaticPayout: null
+};
+
+function loadData() {
+    try {
+        if (!fs.existsSync(DATA_FILE)) {
+            fs.writeFileSync(
+                DATA_FILE,
+                JSON.stringify(DEFAULT_DATA, null, 2)
+            );
+
+            return {
+                ...DEFAULT_DATA
+            };
+        }
+
+        const data =
+            JSON.parse(
+                fs.readFileSync(DATA_FILE, "utf8")
+            );
+
+        return {
+            ...DEFAULT_DATA,
+            ...data
+        };
+    } catch (error) {
+        console.error(
+            "❌ Nie udało się wczytać payout-data.json:",
+            error
+        );
+
+        return {
+            ...DEFAULT_DATA
+        };
+    }
+}
+
+let data = loadData();
+
+function saveData() {
+    try {
+        fs.writeFileSync(
+            DATA_FILE,
+            JSON.stringify(data, null, 2)
+        );
+    } catch (error) {
+        console.error(
+            "❌ Nie udało się zapisać payout-data.json:",
+            error
+        );
+    }
+}
+
+// ======================================================
+// STAWKI DOMYŚLNE
 // ======================================================
 
 const PAYMENTS = {
@@ -115,18 +179,89 @@ const commands = [
         name: "wyplaty",
         description: "Pokazuje aktualną listę tygodniowych wypłat SW"
     },
+
     {
         name: "wyplata-test",
-        description: "Testuje system niedzielnych wypłat SW"
+        description: "Wysyła aktualną listę wypłat na główny serwer"
+    },
+
+    {
+        name: "wyplata-edytuj",
+        description: "Edytuje wypłatę konkretnego funkcjonariusza",
+        options: [
+            {
+                name: "osoba",
+                description: "Funkcjonariusz",
+                type: 6,
+                required: true
+            },
+            {
+                name: "kwota",
+                description: "Nowa kwota wypłaty w PLN",
+                type: 4,
+                required: true,
+                min_value: 0,
+                max_value: 1000000
+            }
+        ]
+    },
+
+    {
+        name: "wyplata-dodaj",
+        description: "Dodaje osobę do aktualnej listy wypłat",
+        options: [
+            {
+                name: "osoba",
+                description: "Funkcjonariusz",
+                type: 6,
+                required: true
+            },
+            {
+                name: "kwota",
+                description: "Kwota wypłaty w PLN",
+                type: 4,
+                required: true,
+                min_value: 0,
+                max_value: 1000000
+            },
+            {
+                name: "ranga",
+                description: "Ranga funkcjonariusza",
+                type: 3,
+                required: false
+            }
+        ]
+    },
+
+    {
+        name: "wyplata-usun",
+        description: "Usuwa osobę z aktualnej listy wypłat",
+        options: [
+            {
+                name: "osoba",
+                description: "Funkcjonariusz",
+                type: 6,
+                required: true
+            }
+        ]
+    },
+
+    {
+        name: "wyplata-reset",
+        description: "Tworzy nową listę na podstawie aktualnych rang SW"
     }
 ];
+
+// ======================================================
+// REST
+// ======================================================
 
 const rest = new REST({
     version: "10"
 }).setToken(TOKEN);
 
 // ======================================================
-// FUNKCJA SPRAWDZAJĄCA RANGĘ
+// ZNAJDOWANIE RANGI
 // ======================================================
 
 function findRole(member, roleNames) {
@@ -148,7 +283,7 @@ function findRole(member, roleNames) {
 }
 
 // ======================================================
-// USTALANIE WYPŁATY
+// USTALANIE WYPŁATY Z RANGI
 // ======================================================
 
 function getPaymentInfo(member) {
@@ -158,7 +293,6 @@ function getPaymentInfo(member) {
         findRole(member, COMMAND_ROLES);
 
     if (commandRole) {
-
         return {
             rank: commandRole.name,
             category: "Dowództwo SW",
@@ -171,7 +305,6 @@ function getPaymentInfo(member) {
         findRole(member, GENERAL_ROLES);
 
     if (generalRole) {
-
         return {
             rank: generalRole.name,
             category: "Korpus Generalski",
@@ -184,7 +317,6 @@ function getPaymentInfo(member) {
         findRole(member, OFFICER_ROLES);
 
     if (officerRole) {
-
         return {
             rank: officerRole.name,
             category: "Korpus Oficerski",
@@ -197,7 +329,6 @@ function getPaymentInfo(member) {
         findRole(member, WARRANT_ROLES);
 
     if (warrantRole) {
-
         return {
             rank: warrantRole.name,
             category: "Korpus Chorążych",
@@ -210,7 +341,6 @@ function getPaymentInfo(member) {
         findRole(member, NCO_ROLES);
 
     if (ncoRole) {
-
         return {
             rank: ncoRole.name,
             category: "Korpus Podoficerski",
@@ -223,7 +353,6 @@ function getPaymentInfo(member) {
         findRole(member, CANDIDATE_ROLES);
 
     if (candidateRole) {
-
         return {
             rank: candidateRole.name,
             category: "Korpus Szeregowych",
@@ -231,15 +360,14 @@ function getPaymentInfo(member) {
         };
     }
 
-    // BRAK RANGI SW
     return null;
 }
 
 // ======================================================
-// POBIERANIE LISTY WYPŁAT
+// POBIERANIE NOWEJ LISTY Z SERWERA SW
 // ======================================================
 
-async function createPayoutList() {
+async function createFreshPayoutList() {
 
     const guild =
         await client.guilds.fetch(GUILD_ID);
@@ -250,13 +378,16 @@ async function createPayoutList() {
 
     for (const member of guild.members.cache.values()) {
 
-        // Pomijamy boty
-        if (member.user.bot) continue;
+        if (member.user.bot) {
+            continue;
+        }
 
         const payment =
             getPaymentInfo(member);
 
-        if (!payment) continue;
+        if (!payment) {
+            continue;
+        }
 
         payouts.push({
             userId: member.id,
@@ -272,10 +403,119 @@ async function createPayoutList() {
 }
 
 // ======================================================
-// WYSŁANIE LISTY NA GŁÓWNY SERWER
+// RESET LISTY
 // ======================================================
 
-async function sendPayoutWebhook(payouts) {
+async function resetPayoutList() {
+
+    const payouts =
+        await createFreshPayoutList();
+
+    data.payouts = payouts;
+
+    saveData();
+
+    return payouts;
+}
+
+// ======================================================
+// FORMATOWANIE PLN
+// ======================================================
+
+function formatMoney(amount) {
+    return `${Number(amount).toLocaleString("pl-PL")} PLN`;
+}
+
+// ======================================================
+// TWORZENIE EMBEDU
+// ======================================================
+
+function createPayoutEmbed() {
+
+    const payouts = data.payouts || [];
+
+    const total =
+        payouts.reduce(
+            (sum, payout) =>
+                sum + Number(payout.amount || 0),
+            0
+        );
+
+    if (payouts.length === 0) {
+
+        return new EmbedBuilder()
+
+            .setColor(0xe53935)
+
+            .setTitle(
+                "💰 TYGODNIOWE WYPŁATY — SŁUŻBA WIĘZIENNA"
+            )
+
+            .setDescription(
+                "❌ Aktualnie lista wypłat jest pusta."
+            )
+
+            .setFooter({
+                text:
+                    "Służba Więzienna • System wypłat"
+            })
+
+            .setTimestamp();
+    }
+
+    const lines =
+        payouts.map(
+            (payout, index) =>
+                `**${index + 1}.** ${payout.mention}\n` +
+                `> 🎖️ ${payout.rank}\n` +
+                `> 🏛️ ${payout.category}\n` +
+                `> 💰 **${formatMoney(payout.amount)}**`
+        );
+
+    return new EmbedBuilder()
+
+        .setColor(0x19a85b)
+
+        .setTitle(
+            "💰 TYGODNIOWE WYPŁATY — SŁUŻBA WIĘZIENNA"
+        )
+
+        .setDescription(
+            lines.join("\n\n") +
+            `\n\n━━━━━━━━━━━━━━━━━━━━\n` +
+            `👥 **Liczba funkcjonariuszy:** ${payouts.length}\n` +
+            `💵 **Łączna kwota:** ${formatMoney(total)}\n` +
+            `📅 **Wypłata:** każda niedziela, 12:00`
+        )
+
+        .setFooter({
+            text:
+                "Służba Więzienna • System tygodniowych wypłat"
+        })
+
+        .setTimestamp();
+}
+
+// ======================================================
+// WEBHOOK — EDYCJA / WYSŁANIE WIADOMOŚCI
+// ======================================================
+
+function getWebhookUrlWithWait() {
+
+    if (!PAYOUT_WEBHOOK_URL) {
+        return null;
+    }
+
+    return PAYOUT_WEBHOOK_URL.includes("?")
+        ? `${PAYOUT_WEBHOOK_URL}&wait=true`
+        : `${PAYOUT_WEBHOOK_URL}?wait=true`;
+}
+
+// ======================================================
+// WYSŁANIE LUB EDYCJA LISTY NA GŁÓWNYM SERWERZE
+// ======================================================
+
+async function sendOrUpdateWebhook() {
 
     if (!PAYOUT_WEBHOOK_URL) {
 
@@ -286,74 +526,75 @@ async function sendPayoutWebhook(payouts) {
         return false;
     }
 
-    if (payouts.length === 0) {
-
-        console.log(
-            "ℹ️ Nie znaleziono funkcjonariuszy do wypłaty."
-        );
-
-        return false;
-    }
-
-    const total =
-        payouts.reduce(
-            (sum, payout) =>
-                sum + payout.amount,
-            0
-        );
-
-    const lines =
-        payouts.map(
-            (payout, index) =>
-                `${index + 1}. ${payout.mention} — ` +
-                `**${payout.rank}** — ` +
-                `${payout.category} — ` +
-                `**${payout.amount.toLocaleString("pl-PL")} PLN**`
-        );
-
-    const embed = {
-
-        title:
-            "💰 TYGODNIOWE WYPŁATY — SŁUŻBA WIĘZIENNA",
-
-        description:
-            `📅 **Niedzielna lista wypłat**\n\n` +
-            lines.join("\n") +
-            `\n\n━━━━━━━━━━━━━━━━━━━━\n` +
-            `👥 **Liczba funkcjonariuszy:** ${payouts.length}\n` +
-            `💵 **Łączna kwota:** ${total.toLocaleString("pl-PL")} PLN`,
-
-        color: 0x19a85b,
-
-        footer: {
-            text:
-                "Służba Więzienna • Tygodniowe wypłaty"
-        },
-
-        timestamp:
-            new Date().toISOString()
+    const payload = {
+        username: "System Wypłat SW",
+        embeds: [
+            createPayoutEmbed().toJSON()
+        ]
     };
 
     try {
 
+        // JEŻELI MAMY JUŻ WIADOMOŚĆ — EDYTUJEMY JĄ
+        if (data.webhookMessageId) {
+
+            const editUrl =
+                `${PAYOUT_WEBHOOK_URL}/messages/${data.webhookMessageId}`;
+
+            const response =
+                await fetch(
+                    editUrl,
+                    {
+                        method: "PATCH",
+
+                        headers: {
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body: JSON.stringify({
+                            embeds: payload.embeds
+                        })
+                    }
+                );
+
+            if (response.ok) {
+
+                console.log(
+                    "✅ Zaktualizowano istniejącą listę wypłat."
+                );
+
+                return true;
+            }
+
+            // Jeżeli wiadomość już nie istnieje,
+            // stworzymy nową.
+            if (response.status !== 404) {
+
+                console.error(
+                    `❌ Błąd edycji webhooka: HTTP ${response.status}`
+                );
+
+                return false;
+            }
+
+            data.webhookMessageId = null;
+            saveData();
+        }
+
+        // TWORZENIE NOWEJ WIADOMOŚCI
         const response =
             await fetch(
-                PAYOUT_WEBHOOK_URL,
+                getWebhookUrlWithWait(),
                 {
                     method: "POST",
 
                     headers: {
-                        "Content-Type": "application/json"
+                        "Content-Type":
+                            "application/json"
                     },
 
-                    body: JSON.stringify({
-                        username:
-                            "System Wypłat SW",
-
-                        embeds: [
-                            embed
-                        ]
-                    })
+                    body: JSON.stringify(payload)
                 }
             );
 
@@ -363,11 +604,24 @@ async function sendPayoutWebhook(payouts) {
                 `❌ Webhook HTTP ${response.status}`
             );
 
+            const text =
+                await response.text();
+
+            console.error(text);
+
             return false;
         }
 
+        const message =
+            await response.json();
+
+        data.webhookMessageId =
+            message.id;
+
+        saveData();
+
         console.log(
-            "✅ Lista wypłat wysłana na serwer główny."
+            "✅ Utworzono nową listę wypłat na głównym serwerze."
         );
 
         return true;
@@ -384,46 +638,32 @@ async function sendPayoutWebhook(payouts) {
 }
 
 // ======================================================
-// LOG NA SERWERZE SW
+// LOGI NA SERWERZE SW
 // ======================================================
 
-async function sendLocalLog(payouts) {
+async function sendLocalLog(title, description, color = 0x19a85b) {
 
-    if (!LOG_CHANNEL_ID) return;
+    if (!LOG_CHANNEL_ID) {
+        return;
+    }
 
     const channel =
         await client.channels.fetch(
             LOG_CHANNEL_ID
         ).catch(() => null);
 
-    if (!channel) return;
-
-    const total =
-        payouts.reduce(
-            (sum, payout) =>
-                sum + payout.amount,
-            0
-        );
-
-    const lines =
-        payouts.map(
-            payout =>
-                `${payout.mention} — **${payout.amount.toLocaleString("pl-PL")} PLN**`
-        );
+    if (!channel) {
+        return;
+    }
 
     const embed =
         new EmbedBuilder()
 
-            .setColor(0x19a85b)
+            .setColor(color)
 
-            .setTitle(
-                "📋 WYKONANO LISTĘ TYGODNIOWYCH WYPŁAT"
-            )
+            .setTitle(title)
 
-            .setDescription(
-                lines.join("\n") +
-                `\n\n💵 **Łącznie:** ${total.toLocaleString("pl-PL")} PLN`
-            )
+            .setDescription(description)
 
             .setFooter({
                 text:
@@ -434,83 +674,161 @@ async function sendLocalLog(payouts) {
 
     await channel.send({
         embeds: [embed]
+    }).catch(error => {
+        console.error(
+            "❌ Nie udało się wysłać logu:",
+            error
+        );
     });
 }
 
 // ======================================================
-// WYKONANIE WYPŁAT
+// SPRAWDZANIE UPRAWNIEŃ
 // ======================================================
 
-async function processPayouts() {
+function hasManagePermission(interaction) {
+
+    return interaction.memberPermissions?.has(
+        PermissionFlagsBits.ManageGuild
+    );
+}
+
+// ======================================================
+// AUTOMATYCZNA WYPŁATA
+// ======================================================
+
+async function processAutomaticPayout() {
 
     console.log(
-        "💰 Rozpoczynam sprawdzanie wypłat..."
+        "💰 Rozpoczynam automatyczną wypłatę..."
     );
 
     try {
 
-        const payouts =
-            await createPayoutList();
+        if (!data.payouts || data.payouts.length === 0) {
 
-        console.log(
-            `👥 Znaleziono ${payouts.length} osób.`
-        );
+            console.log(
+                "ℹ️ Lista wypłat jest pusta."
+            );
 
-        if (payouts.length === 0) {
             return;
         }
 
-        const sent =
-            await sendPayoutWebhook(
-                payouts
-            );
+        const success =
+            await sendOrUpdateWebhook();
 
-        if (sent) {
-
-            await sendLocalLog(
-                payouts
-            );
+        if (!success) {
+            return;
         }
+
+        const now =
+            getPolandDate();
+
+        const payoutKey =
+            `${now.year}-${now.month}-${now.day}`;
+
+        data.lastAutomaticPayout =
+            payoutKey;
+
+        saveData();
+
+        const total =
+            data.payouts.reduce(
+                (sum, payout) =>
+                    sum + Number(payout.amount || 0),
+                0
+            );
+
+        await sendLocalLog(
+            "💰 WYKONANO TYGODNIOWĄ WYPŁATĘ",
+            `✅ Lista wypłat została wysłana/zaktualizowana.\n\n` +
+            `👥 Osób: **${data.payouts.length}**\n` +
+            `💵 Łącznie: **${formatMoney(total)}**`
+        );
+
+        console.log(
+            "✅ Automatyczna wypłata wykonana."
+        );
 
     } catch (error) {
 
         console.error(
-            "❌ Błąd systemu wypłat:",
+            "❌ Błąd automatycznej wypłaty:",
             error
         );
     }
 }
 
 // ======================================================
-// AUTOMATYCZNA NIEDZIELA
+// CZAS POLSKI
+// ======================================================
+
+function getPolandDate() {
+
+    const parts =
+        new Intl.DateTimeFormat(
+            "en-GB",
+            {
+                timeZone: "Europe/Warsaw",
+                year: "numeric",
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+                weekday: "short",
+                hourCycle: "h23"
+            }
+        ).formatToParts(new Date());
+
+    const result = {};
+
+    for (const part of parts) {
+        result[part.type] = part.value;
+    }
+
+    return {
+        year: Number(result.year),
+        month: Number(result.month),
+        day: Number(result.day),
+        hour: Number(result.hour),
+        minute: Number(result.minute),
+        weekday: result.weekday
+    };
+}
+
+// ======================================================
+// SPRAWDZANIE NIEDZIELNEJ WYPŁATY
 // ======================================================
 
 function checkSundayPayout() {
 
-    const now = new Date();
+    const now =
+        getPolandDate();
 
-    // JS:
-    // 0 = niedziela
-    // 1 = poniedziałek
-    // itd.
-
-    const day =
-        now.getDay();
-
-    const hour =
-        now.getHours();
-
-    const minute =
-        now.getMinutes();
+    // Sun = niedziela
+    if (now.weekday !== "Sun") {
+        return;
+    }
 
     if (
-        day === 0 &&
-        hour === PAYOUT_HOUR &&
-        minute === PAYOUT_MINUTE
+        now.hour !== PAYOUT_HOUR ||
+        now.minute !== PAYOUT_MINUTE
     ) {
-
-        processPayouts();
+        return;
     }
+
+    const payoutKey =
+        `${now.year}-${now.month}-${now.day}`;
+
+    // Zabezpieczenie przed podwójną wypłatą
+    if (
+        data.lastAutomaticPayout ===
+        payoutKey
+    ) {
+        return;
+    }
+
+    processAutomaticPayout();
 }
 
 // ======================================================
@@ -522,7 +840,7 @@ client.once(
     async () => {
 
         console.log(
-            "======================================"
+            "=========================================="
         );
 
         console.log(
@@ -530,15 +848,15 @@ client.once(
         );
 
         console.log(
-            "🛡️ System Służby Więziennej"
+            "🛡️ System Wypłat Służby Więziennej"
         );
 
         console.log(
-            "💰 Wypłaty: każda niedziela, 12:00"
+            "💰 Automatyczne wypłaty: niedziela 12:00"
         );
 
         console.log(
-            "======================================"
+            "=========================================="
         );
 
         try {
@@ -554,7 +872,7 @@ client.once(
             );
 
             console.log(
-                "✅ Zarejestrowano komendy."
+                "✅ Zarejestrowano wszystkie komendy."
             );
 
         } catch (error) {
@@ -565,7 +883,7 @@ client.once(
             );
         }
 
-        // Sprawdzamy co minutę
+        // Sprawdzamy czas co minutę
         setInterval(
             checkSundayPayout,
             60 * 1000
@@ -594,69 +912,38 @@ client.on(
             "wyplaty"
         ) {
 
-            await interaction.deferReply({
-                ephemeral: true
+            return interaction.reply({
+                embeds: [
+                    createPayoutEmbed()
+                ]
             });
+        }
 
-            try {
+        // ==================================================
+        // KOMENDY ADMINISTRACYJNE
+        // ==================================================
 
-                const payouts =
-                    await createPayoutList();
+        const adminCommands = [
+            "wyplata-test",
+            "wyplata-edytuj",
+            "wyplata-dodaj",
+            "wyplata-usun",
+            "wyplata-reset"
+        ];
 
-                if (payouts.length === 0) {
+        if (
+            adminCommands.includes(
+                interaction.commandName
+            )
+        ) {
 
-                    return interaction.editReply(
-                        "ℹ️ Nie znaleziono żadnych funkcjonariuszy z przypisaną wypłatą."
-                    );
-                }
+            if (!hasManagePermission(interaction)) {
 
-                const total =
-                    payouts.reduce(
-                        (sum, payout) =>
-                            sum + payout.amount,
-                        0
-                    );
-
-                const lines =
-                    payouts.map(
-                        payout =>
-                            `${payout.mention} — ` +
-                            `${payout.rank} — ` +
-                            `**${payout.amount.toLocaleString("pl-PL")} PLN**`
-                    );
-
-                const embed =
-                    new EmbedBuilder()
-
-                        .setColor(0x19a85b)
-
-                        .setTitle(
-                            "💰 AKTUALNA LISTA WYPŁAT SW"
-                        )
-
-                        .setDescription(
-                            lines.join("\n") +
-                            `\n\n━━━━━━━━━━━━━━━━━━━━\n` +
-                            `👥 Osób: **${payouts.length}**\n` +
-                            `💵 Łącznie: **${total.toLocaleString("pl-PL")} PLN**`
-                        )
-
-                        .setFooter({
-                            text:
-                                "Wypłaty realizowane w każdą niedzielę"
-                        });
-
-                return interaction.editReply({
-                    embeds: [embed]
+                return interaction.reply({
+                    content:
+                        "❌ Nie masz uprawnień do zarządzania wypłatami.",
+                    ephemeral: true
                 });
-
-            } catch (error) {
-
-                console.error(error);
-
-                return interaction.editReply(
-                    "❌ Nie udało się pobrać listy wypłat."
-                );
             }
         }
 
@@ -669,18 +956,220 @@ client.on(
             "wyplata-test"
         ) {
 
-            if (
-                !interaction.memberPermissions.has(
-                    PermissionFlagsBits.ManageGuild
-                )
-            ) {
+            await interaction.deferReply({
+                ephemeral: true
+            });
+
+            const success =
+                await sendOrUpdateWebhook();
+
+            if (!success) {
+
+                return interaction.editReply(
+                    "❌ Nie udało się wysłać listy. Sprawdź `PAYOUT_WEBHOOK_URL`."
+                );
+            }
+
+            await sendLocalLog(
+                "🧪 TEST WYPŁAT",
+                `Administrator <@${interaction.user.id}> wykonał test listy wypłat.`
+            );
+
+            return interaction.editReply(
+                "✅ Aktualna lista wypłat została wysłana/zaktualizowana na głównym serwerze."
+            );
+        }
+
+        // ==================================================
+        // /wyplata-edytuj
+        // ==================================================
+
+        if (
+            interaction.commandName ===
+            "wyplata-edytuj"
+        ) {
+
+            const user =
+                interaction.options.getUser(
+                    "osoba"
+                );
+
+            const amount =
+                interaction.options.getInteger(
+                    "kwota"
+                );
+
+            const payout =
+                data.payouts.find(
+                    p => p.userId === user.id
+                );
+
+            if (!payout) {
 
                 return interaction.reply({
                     content:
-                        "❌ Nie masz uprawnień do testowania wypłat.",
+                        `❌ ${user} nie znajduje się na aktualnej liście wypłat.\n\n` +
+                        `Użyj najpierw \`/wyplata-dodaj\` albo \`/wyplata-reset\`.`,
                     ephemeral: true
                 });
             }
+
+            const oldAmount =
+                payout.amount;
+
+            payout.amount =
+                amount;
+
+            saveData();
+
+            await sendOrUpdateWebhook();
+
+            await sendLocalLog(
+                "✏️ EDYCJA WYPŁATY",
+                `<@${interaction.user.id}> zmienił wypłatę ${user}.\n\n` +
+                `💰 Było: **${formatMoney(oldAmount)}**\n` +
+                `💰 Jest: **${formatMoney(amount)}**`
+            );
+
+            return interaction.reply({
+                content:
+                    `✅ Zmieniono wypłatę dla ${user}.\n\n` +
+                    `💰 Poprzednio: **${formatMoney(oldAmount)}**\n` +
+                    `💰 Aktualnie: **${formatMoney(amount)}**\n\n` +
+                    `📋 Lista na głównym serwerze została zaktualizowana.`,
+                ephemeral: true
+            });
+        }
+
+        // ==================================================
+        // /wyplata-dodaj
+        // ==================================================
+
+        if (
+            interaction.commandName ===
+            "wyplata-dodaj"
+        ) {
+
+            const user =
+                interaction.options.getUser(
+                    "osoba"
+                );
+
+            const amount =
+                interaction.options.getInteger(
+                    "kwota"
+                );
+
+            const rank =
+                interaction.options.getString(
+                    "ranga"
+                ) || "Funkcjonariusz SW";
+
+            const existing =
+                data.payouts.find(
+                    p => p.userId === user.id
+                );
+
+            if (existing) {
+
+                return interaction.reply({
+                    content:
+                        `❌ ${user} już znajduje się na liście.\n` +
+                        `Użyj \`/wyplata-edytuj\`, aby zmienić kwotę.`,
+                    ephemeral: true
+                });
+            }
+
+            data.payouts.push({
+                userId: user.id,
+                username: user.username,
+                mention: `<@${user.id}>`,
+                rank: rank,
+                category: "Ręcznie dodany",
+                amount: amount
+            });
+
+            saveData();
+
+            await sendOrUpdateWebhook();
+
+            await sendLocalLog(
+                "➕ DODANO OSOBĘ DO WYPŁAT",
+                `<@${interaction.user.id}> dodał ${user} do listy.\n\n` +
+                `🎖️ Ranga: **${rank}**\n` +
+                `💰 Wypłata: **${formatMoney(amount)}**`
+            );
+
+            return interaction.reply({
+                content:
+                    `✅ Dodano ${user} do aktualnej listy.\n\n` +
+                    `🎖️ Ranga: **${rank}**\n` +
+                    `💰 Wypłata: **${formatMoney(amount)}**`,
+                ephemeral: true
+            });
+        }
+
+        // ==================================================
+        // /wyplata-usun
+        // ==================================================
+
+        if (
+            interaction.commandName ===
+            "wyplata-usun"
+        ) {
+
+            const user =
+                interaction.options.getUser(
+                    "osoba"
+                );
+
+            const index =
+                data.payouts.findIndex(
+                    p => p.userId === user.id
+                );
+
+            if (index === -1) {
+
+                return interaction.reply({
+                    content:
+                        `❌ ${user} nie znajduje się na aktualnej liście.`,
+                    ephemeral: true
+                });
+            }
+
+            const removed =
+                data.payouts[index];
+
+            data.payouts.splice(
+                index,
+                1
+            );
+
+            saveData();
+
+            await sendOrUpdateWebhook();
+
+            await sendLocalLog(
+                "➖ USUNIĘTO OSOBĘ Z WYPŁAT",
+                `<@${interaction.user.id}> usunął ${user} z listy.\n\n` +
+                `💰 Usunięta kwota: **${formatMoney(removed.amount)}**`
+            );
+
+            return interaction.reply({
+                content:
+                    `✅ Usunięto ${user} z aktualnej listy wypłat.`,
+                ephemeral: true
+            });
+        }
+
+        // ==================================================
+        // /wyplata-reset
+        // ==================================================
+
+        if (
+            interaction.commandName ===
+            "wyplata-reset"
+        ) {
 
             await interaction.deferReply({
                 ephemeral: true
@@ -688,39 +1177,33 @@ client.on(
 
             try {
 
+                const oldCount =
+                    data.payouts.length;
+
                 const payouts =
-                    await createPayoutList();
+                    await resetPayoutList();
 
-                if (payouts.length === 0) {
-
-                    return interaction.editReply(
-                        "ℹ️ Nie znaleziono funkcjonariuszy do wypłaty."
-                    );
-                }
+                await sendOrUpdateWebhook();
 
                 const total =
                     payouts.reduce(
                         (sum, payout) =>
-                            sum + payout.amount,
+                            sum + Number(payout.amount || 0),
                         0
                     );
 
-                const sent =
-                    await sendPayoutWebhook(
-                        payouts
-                    );
-
-                if (!sent) {
-
-                    return interaction.editReply(
-                        "❌ Test nie został wysłany. Sprawdź PAYOUT_WEBHOOK_URL."
-                    );
-                }
+                await sendLocalLog(
+                    "🔄 ZRESETOWANO LISTĘ WYPŁAT",
+                    `<@${interaction.user.id}> utworzył nową listę na podstawie aktualnych rang SW.\n\n` +
+                    `👥 Było: **${oldCount}**\n` +
+                    `👥 Teraz: **${payouts.length}**\n` +
+                    `💵 Łącznie: **${formatMoney(total)}**`
+                );
 
                 return interaction.editReply(
-                    `✅ Test wypłat wykonany.\n\n` +
-                    `👥 Osób: **${payouts.length}**\n` +
-                    `💰 Łącznie: **${total.toLocaleString("pl-PL")} PLN**`
+                    `✅ Utworzono nową listę wypłat na podstawie rang SW.\n\n` +
+                    `👥 Funkcjonariuszy: **${payouts.length}**\n` +
+                    `💰 Łącznie: **${formatMoney(total)}**`
                 );
 
             } catch (error) {
@@ -728,7 +1211,7 @@ client.on(
                 console.error(error);
 
                 return interaction.editReply(
-                    "❌ Wystąpił błąd podczas testu."
+                    "❌ Nie udało się utworzyć nowej listy."
                 );
             }
         }
@@ -762,7 +1245,7 @@ process.on(
 );
 
 // ======================================================
-// ENV
+// SPRAWDZENIE ENV
 // ======================================================
 
 if (
@@ -772,7 +1255,7 @@ if (
 ) {
 
     console.error(
-        "❌ Brakuje TOKEN, CLIENT_ID lub GUILD_ID."
+        "❌ Brakuje TOKEN, CLIENT_ID lub GUILD_ID w Variables/Environment."
     );
 
     process.exit(1);
