@@ -1,7 +1,7 @@
 {
-  "name": "system-wyplat-sw",
+  "name": "sw-system-wyplat",
   "version": "1.0.0",
-  "description": "Tygodniowy system wypłat Służby Więziennej",
+  "description": "System tygodniowych wypłat Służby Więziennej",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
