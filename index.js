@@ -3,30 +3,50 @@ require("dotenv").config();
 const {
     Client,
     GatewayIntentBits,
+    EmbedBuilder,
     REST,
     Routes,
     SlashCommandBuilder,
-    PermissionFlagsBits,
-    EmbedBuilder
+    PermissionFlagsBits
 } = require("discord.js");
 
 // ======================================================
 // KONFIGURACJA
 // ======================================================
 
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
+const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
-const GUILD_ID = process.env.GUILD_ID;
+
+const SW_GUILD_ID = process.env.SW_GUILD_ID;
+const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID;
+
 const UNB_API_TOKEN = process.env.UNB_API_TOKEN;
 
-if (!DISCORD_TOKEN || !CLIENT_ID || !GUILD_ID || !UNB_API_TOKEN) {
-    console.error("❌ Brakuje zmiennych w .env!");
-    console.error("");
-    console.error("Wymagane:");
-    console.error("DISCORD_TOKEN=...");
-    console.error("CLIENT_ID=...");
-    console.error("GUILD_ID=...");
-    console.error("UNB_API_TOKEN=...");
+const PAYOUT_ROLE_ID = process.env.PAYOUT_ROLE_ID;
+const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
+
+// ======================================================
+// SPRAWDZANIE ENV
+// ======================================================
+
+const required = [
+    ["TOKEN", TOKEN],
+    ["CLIENT_ID", CLIENT_ID],
+    ["SW_GUILD_ID", SW_GUILD_ID],
+    ["MAIN_GUILD_ID", MAIN_GUILD_ID],
+    ["UNB_API_TOKEN", UNB_API_TOKEN],
+    ["PAYOUT_ROLE_ID", PAYOUT_ROLE_ID]
+];
+
+const missing = required
+    .filter(([name, value]) => !value)
+    .map(([name]) => name);
+
+if (missing.length > 0) {
+    console.error(
+        "❌ Brakuje zmiennych środowiskowych:",
+        missing.join(", ")
+    );
     process.exit(1);
 }
 
@@ -47,58 +67,65 @@ const client = new Client({
 const UNB_BASE_URL = "https://unbelievaboat.com/api/v1";
 
 /**
- * Uniwersalne zapytanie do API UnbelievaBoat
+ * Wykonuje zapytanie do UnbelievaBoat API.
  */
 async function unbRequest(endpoint, options = {}) {
-    const response = await fetch(`${UNB_BASE_URL}${endpoint}`, {
-        ...options,
-        headers: {
-            "Authorization": UNB_API_TOKEN,
-            "Content-Type": "application/json",
-            ...(options.headers || {})
+
+    const response = await fetch(
+        `${UNB_BASE_URL}${endpoint}`,
+        {
+            ...options,
+            headers: {
+                "Authorization": UNB_API_TOKEN,
+                "Content-Type": "application/json",
+                ...(options.headers || {})
+            }
         }
-    });
+    );
 
     const text = await response.text();
 
     let data;
 
     try {
-        data = text ? JSON.parse(text) : {};
+        data = text ? JSON.parse(text) : null;
     } catch {
         data = text;
     }
 
     if (!response.ok) {
-        throw new Error(
-            `UnbelievaBoat API ${response.status}: ${
-                typeof data === "string"
-                    ? data
-                    : JSON.stringify(data)
-            }`
+        const error = new Error(
+            `UnbelievaBoat API ${response.status}`
         );
+
+        error.status = response.status;
+        error.data = data;
+
+        throw error;
     }
 
     return data;
 }
 
 // ======================================================
-// POBIERANIE SALDA
+// SPRAWDZENIE SALDA
 // ======================================================
 
 async function getBalance(userId) {
+
     return await unbRequest(
-        `/guilds/${GUILD_ID}/users/${userId}`
+        `/guilds/${MAIN_GUILD_ID}/users/${userId}`
     );
 }
 
 // ======================================================
-// DODAWANIE PIENIĘDZY
+// DODANIE WYPŁATY
 // ======================================================
 
-async function addMoney(userId, amount, reason) {
+async function addPayout(userId, amount, reason) {
+
     return await unbRequest(
-        `/guilds/${GUILD_ID}/users/${userId}`,
+        `/guilds/${MAIN_GUILD_ID}/users/${userId}`,
         {
             method: "PATCH",
             body: JSON.stringify({
@@ -110,20 +137,11 @@ async function addMoney(userId, amount, reason) {
 }
 
 // ======================================================
-// ODEJMOWANIE PIENIĘDZY
+// FORMATOWANIE PIENIĘDZY
 // ======================================================
 
-async function removeMoney(userId, amount, reason) {
-    return await unbRequest(
-        `/guilds/${GUILD_ID}/users/${userId}`,
-        {
-            method: "PATCH",
-            body: JSON.stringify({
-                cash: -amount,
-                reason: reason
-            })
-        }
-    );
+function money(amount) {
+    return Number(amount || 0).toLocaleString("pl-PL");
 }
 
 // ======================================================
@@ -132,89 +150,29 @@ async function removeMoney(userId, amount, reason) {
 
 const commands = [
 
-    // --------------------------------------------------
-    // /sw-wyplata
-    // --------------------------------------------------
-
     new SlashCommandBuilder()
         .setName("sw-wyplata")
-        .setDescription("Wypłać funkcjonariuszowi pieniądze")
+        .setDescription("Wypłać pieniądze funkcjonariuszowi na głównym serwerze.")
         .addUserOption(option =>
             option
                 .setName("osoba")
-                .setDescription("Funkcjonariusz otrzymujący wypłatę")
+                .setDescription("Osoba otrzymująca wypłatę.")
                 .setRequired(true)
         )
         .addIntegerOption(option =>
             option
                 .setName("kwota")
-                .setDescription("Kwota wypłaty")
-                .setMinValue(1)
+                .setDescription("Kwota wypłaty.")
                 .setRequired(true)
+                .setMinValue(1)
+                .setMaxValue(1000000000)
         )
         .addStringOption(option =>
             option
                 .setName("powod")
-                .setDescription("Powód wypłaty")
+                .setDescription("Powód wypłaty.")
                 .setRequired(false)
-        )
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageGuild
-        ),
-
-    // --------------------------------------------------
-    // /sw-saldo
-    // --------------------------------------------------
-
-    new SlashCommandBuilder()
-        .setName("sw-saldo")
-        .setDescription("Sprawdź saldo funkcjonariusza")
-        .addUserOption(option =>
-            option
-                .setName("osoba")
-                .setDescription("Osoba")
-                .setRequired(true)
-        ),
-
-    // --------------------------------------------------
-    // /sw-zabierz
-    // --------------------------------------------------
-
-    new SlashCommandBuilder()
-        .setName("sw-zabierz")
-        .setDescription("Zabierz funkcjonariuszowi pieniądze")
-        .addUserOption(option =>
-            option
-                .setName("osoba")
-                .setDescription("Osoba")
-                .setRequired(true)
-        )
-        .addIntegerOption(option =>
-            option
-                .setName("kwota")
-                .setDescription("Kwota do zabrania")
-                .setMinValue(1)
-                .setRequired(true)
-        )
-        .addStringOption(option =>
-            option
-                .setName("powod")
-                .setDescription("Powód")
-                .setRequired(false)
-        )
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageGuild
-        ),
-
-    // --------------------------------------------------
-    // /sw-test
-    // --------------------------------------------------
-
-    new SlashCommandBuilder()
-        .setName("sw-test")
-        .setDescription("Sprawdź połączenie z API UnbelievaBoat")
-        .setDefaultMemberPermissions(
-            PermissionFlagsBits.ManageGuild
+                .setMaxLength(500)
         )
 
 ].map(command => command.toJSON());
@@ -227,49 +185,48 @@ async function registerCommands() {
 
     const rest = new REST({
         version: "10"
-    }).setToken(DISCORD_TOKEN);
+    }).setToken(TOKEN);
 
-    try {
+    console.log("🔄 Rejestrowanie komendy SW...");
 
-        console.log("🔄 Rejestrowanie komend SW...");
+    await rest.put(
+        Routes.applicationGuildCommands(
+            CLIENT_ID,
+            SW_GUILD_ID
+        ),
+        {
+            body: commands
+        }
+    );
 
-        await rest.put(
-            Routes.applicationGuildCommands(
-                CLIENT_ID,
-                GUILD_ID
-            ),
-            {
-                body: commands
-            }
-        );
-
-        console.log("✅ Komendy SW zostały zarejestrowane!");
-
-    } catch (error) {
-
-        console.error(
-            "❌ Błąd rejestracji komend:",
-            error
-        );
-
-    }
+    console.log("✅ Komenda /sw-wyplata została zarejestrowana.");
 }
 
 // ======================================================
-// READY
+// BOT READY
 // ======================================================
 
 client.once("ready", async () => {
 
-    console.log("");
-    console.log("====================================");
-    console.log("🟢 BOT SW URUCHOMIONY");
-    console.log("====================================");
-    console.log(`🤖 Konto: ${client.user.tag}`);
-    console.log(`🏛️ Serwer: ${GUILD_ID}`);
-    console.log("💰 UnbelievaBoat API: AKTYWNE");
-    console.log("====================================");
-    console.log("");
+    console.log("=================================");
+    console.log(`🤖 Zalogowano jako ${client.user.tag}`);
+    console.log(`👮 Serwer SW: ${SW_GUILD_ID}`);
+    console.log(`🏛️ Serwer główny: ${MAIN_GUILD_ID}`);
+    console.log("💰 System wypłat: AKTYWNY");
+    console.log("=================================");
+
+    try {
+
+        await registerCommands();
+
+    } catch (error) {
+
+        console.error(
+            "❌ Nie udało się zarejestrować komend:",
+            error
+        );
+
+    }
 
 });
 
@@ -279,291 +236,353 @@ client.once("ready", async () => {
 
 client.on("interactionCreate", async interaction => {
 
+    // ==================================================
+    // IGNORUJ BOTY
+    // ==================================================
+
+    if (interaction.user.bot) {
+        return;
+    }
+
+    // ==================================================
+    // TYLKO SLASH COMMAND
+    // ==================================================
+
     if (!interaction.isChatInputCommand()) {
         return;
     }
 
     // ==================================================
-    // /sw-test
+    // TYLKO SERWER SW
     // ==================================================
 
-    if (interaction.commandName === "sw-test") {
+    if (interaction.guildId !== SW_GUILD_ID) {
 
-        await interaction.deferReply({
+        return interaction.reply({
+            content:
+                "❌ Ta komenda może być używana wyłącznie na serwerze Służby Więziennej.",
             ephemeral: true
         });
 
-        try {
-
-            const guild = await unbRequest(
-                `/guilds/${GUILD_ID}`
-            );
-
-            const embed = new EmbedBuilder()
-                .setTitle("🟢 Połączenie prawidłowe")
-                .setDescription(
-                    "BOT SW prawidłowo połączył się z API UnbelievaBoat."
-                )
-                .addFields(
-                    {
-                        name: "🏛️ Serwer",
-                        value: guild.name || GUILD_ID,
-                        inline: false
-                    },
-                    {
-                        name: "💰 API",
-                        value: "Połączone",
-                        inline: true
-                    },
-                    {
-                        name: "🤖 BOT SW",
-                        value: "Online",
-                        inline: true
-                    }
-                )
-                .setTimestamp();
-
-            await interaction.editReply({
-                embeds: [embed]
-            });
-
-        } catch (error) {
-
-            console.error(error);
-
-            await interaction.editReply(
-                `❌ Nie udało się połączyć z API.\n\n\`${error.message}\``
-            );
-        }
-
-        return;
     }
 
     // ==================================================
-    // /sw-saldo
-    // ==================================================
-
-    if (interaction.commandName === "sw-saldo") {
-
-        await interaction.deferReply({
-            ephemeral: true
-        });
-
-        const user = interaction.options.getUser("osoba");
-
-        try {
-
-            const balance = await getBalance(user.id);
-
-            const cash = balance.cash ?? 0;
-            const bank = balance.bank ?? 0;
-            const total = balance.total ?? cash + bank;
-
-            const embed = new EmbedBuilder()
-                .setTitle("💰 Saldo funkcjonariusza")
-                .setThumbnail(user.displayAvatarURL())
-                .addFields(
-                    {
-                        name: "👤 Funkcjonariusz",
-                        value: `${user}`,
-                        inline: false
-                    },
-                    {
-                        name: "💵 Gotówka",
-                        value: `${cash}$`,
-                        inline: true
-                    },
-                    {
-                        name: "🏦 Bank",
-                        value: `${bank}$`,
-                        inline: true
-                    },
-                    {
-                        name: "💰 Łącznie",
-                        value: `${total}$`,
-                        inline: true
-                    }
-                )
-                .setTimestamp();
-
-            await interaction.editReply({
-                embeds: [embed]
-            });
-
-        } catch (error) {
-
-            console.error(error);
-
-            await interaction.editReply(
-                `❌ Nie udało się pobrać salda.\n\n\`${error.message}\``
-            );
-        }
-
-        return;
-    }
-
-    // ==================================================
-    // /sw-wyplata
+    // /SW-WYPLATA
     // ==================================================
 
     if (interaction.commandName === "sw-wyplata") {
 
-        await interaction.deferReply();
+        // ----------------------------------------------
+        // SPRAWDZENIE ROLI
+        // ----------------------------------------------
 
-        const user = interaction.options.getUser("osoba");
-        const amount = interaction.options.getInteger("kwota");
+        const member = interaction.member;
+
+        const hasPayoutRole =
+            member.roles.cache.has(PAYOUT_ROLE_ID);
+
+        const isAdministrator =
+            member.permissions.has(
+                PermissionFlagsBits.Administrator
+            );
+
+        if (!hasPayoutRole && !isAdministrator) {
+
+            return interaction.reply({
+                content:
+                    "❌ Nie masz uprawnień do wykonywania wypłat.",
+                ephemeral: true
+            });
+
+        }
+
+        // ----------------------------------------------
+        // POBRANIE DANYCH
+        // ----------------------------------------------
+
+        const target =
+            interaction.options.getUser("osoba");
+
+        const amount =
+            interaction.options.getInteger("kwota");
+
         const reason =
-            interaction.options.getString("powod")
-            || "Wypłata Służby Więziennej";
+            interaction.options.getString("powod") ||
+            "Wypłata służbowa SW";
+
+        // ----------------------------------------------
+        // NIE POZWALAMY WYPŁACAĆ BOTOM
+        // ----------------------------------------------
+
+        if (target.bot) {
+
+            return interaction.reply({
+                content:
+                    "❌ Nie można wypłacać pieniędzy kontom botów.",
+                ephemeral: true
+            });
+
+        }
+
+        // ----------------------------------------------
+        // ZABEZPIECZENIE KWOTY
+        // ----------------------------------------------
+
+        if (!Number.isInteger(amount) || amount <= 0) {
+
+            return interaction.reply({
+                content:
+                    "❌ Podaj prawidłową kwotę większą od 0.",
+                ephemeral: true
+            });
+
+        }
+
+        // ----------------------------------------------
+        // DEFER
+        // ----------------------------------------------
+
+        await interaction.deferReply();
 
         try {
 
-            // Pobieramy stare saldo
-            const before = await getBalance(user.id);
+            // ------------------------------------------
+            // SPRAWDZENIE SALDA PRZED
+            // ------------------------------------------
 
-            // Dodajemy pieniądze
-            const result = await addMoney(
-                user.id,
-                amount,
-                `${reason} | Wystawił: ${interaction.user.tag}`
-            );
+            let before;
 
-            const cashBefore = before.cash ?? 0;
-            const cashAfter = result.cash ?? cashBefore + amount;
+            try {
 
-            const embed = new EmbedBuilder()
-                .setTitle("💰 WYPŁATA SŁUŻBY WIĘZIENNEJ")
-                .setDescription(
-                    `Pomyślnie wypłacono pieniądze funkcjonariuszowi ${user}.`
-                )
-                .addFields(
-                    {
-                        name: "👤 Odbiorca",
-                        value: `${user}`,
-                        inline: false
-                    },
-                    {
-                        name: "💵 Wypłata",
-                        value: `+${amount}$`,
-                        inline: true
-                    },
-                    {
-                        name: "💰 Gotówka po wypłacie",
-                        value: `${cashAfter}$`,
-                        inline: true
-                    },
-                    {
-                        name: "📋 Powód",
-                        value: reason,
-                        inline: false
-                    },
-                    {
-                        name: "👮 Wypłacił",
-                        value: `${interaction.user}`,
-                        inline: false
-                    }
-                )
-                .setThumbnail(user.displayAvatarURL())
-                .setTimestamp()
-                .setFooter({
-                    text: "Służba Więzienna • System wypłat"
+                before = await getBalance(target.id);
+
+            } catch (error) {
+
+                console.error(
+                    "❌ Błąd pobierania salda:",
+                    error
+                );
+
+                return interaction.editReply({
+                    content:
+                        "❌ Nie udało się pobrać konta użytkownika z UnbelievaBoat.\n\n" +
+                        "Sprawdź, czy użytkownik znajduje się na głównym serwerze."
                 });
+
+            }
+
+            // ------------------------------------------
+            // WYKONANIE WYPŁATY
+            // ------------------------------------------
+
+            const result =
+                await addPayout(
+                    target.id,
+                    amount,
+                    `${reason} | Wypłacający: ${interaction.user.tag}`
+                );
+
+            // ------------------------------------------
+            // SALDO PO
+            // ------------------------------------------
+
+            let after = result;
+
+            if (!after || typeof after.total === "undefined") {
+
+                try {
+
+                    after = await getBalance(target.id);
+
+                } catch {
+
+                    after = null;
+
+                }
+
+            }
+
+            // ------------------------------------------
+            // EMBED
+            // ------------------------------------------
+
+            const embed =
+                new EmbedBuilder()
+                    .setTitle("💰 Wypłata służbowa SW")
+                    .setDescription(
+                        `Wypłata została pomyślnie wykonana na **głównym serwerze**.`
+                    )
+                    .addFields(
+                        {
+                            name: "👤 Funkcjonariusz",
+                            value:
+                                `${target} \n\`${target.id}\``,
+                            inline: true
+                        },
+                        {
+                            name: "💵 Kwota",
+                            value:
+                                `**${money(amount)}**`,
+                            inline: true
+                        },
+                        {
+                            name: "👮 Wypłacający",
+                            value:
+                                `${interaction.user}`,
+                            inline: true
+                        },
+                        {
+                            name: "📋 Powód",
+                            value:
+                                reason,
+                            inline: false
+                        }
+                    )
+                    .setTimestamp()
+                    .setFooter({
+                        text:
+                            "Służba Więzienna • System wypłat"
+                    });
+
+            // ------------------------------------------
+            // INFORMACJA O SALDZIE
+            // ------------------------------------------
+
+            if (before) {
+
+                embed.addFields({
+                    name: "💳 Saldo przed",
+                    value:
+                        `${money(before.total)}`
+                });
+
+            }
+
+            if (after && typeof after.total !== "undefined") {
+
+                embed.addFields({
+                    name: "💳 Saldo po",
+                    value:
+                        `${money(after.total)}`
+                });
+
+            }
 
             await interaction.editReply({
                 embeds: [embed]
             });
 
-        } catch (error) {
+            // ------------------------------------------
+            // LOGI
+            // ------------------------------------------
 
-            console.error(error);
+            if (LOG_CHANNEL_ID) {
 
-            await interaction.editReply(
-                `❌ Wypłata nie została wykonana.\n\n\`${error.message}\``
-            );
-        }
+                const logChannel =
+                    await client.channels
+                        .fetch(LOG_CHANNEL_ID)
+                        .catch(() => null);
 
-        return;
-    }
+                if (logChannel && logChannel.isTextBased()) {
 
-    // ==================================================
-    // /sw-zabierz
-    // ==================================================
+                    const logEmbed =
+                        new EmbedBuilder()
+                            .setTitle("💰 LOG • Wypłata SW")
+                            .addFields(
+                                {
+                                    name: "👤 Otrzymał",
+                                    value:
+                                        `${target} (${target.id})`,
+                                    inline: false
+                                },
+                                {
+                                    name: "💵 Kwota",
+                                    value:
+                                        `${money(amount)}`,
+                                    inline: true
+                                },
+                                {
+                                    name: "👮 Wypłacający",
+                                    value:
+                                        `${interaction.user} (${interaction.user.id})`,
+                                    inline: true
+                                },
+                                {
+                                    name: "📋 Powód",
+                                    value:
+                                        reason,
+                                    inline: false
+                                },
+                                {
+                                    name: "🏛️ Ekonomia",
+                                    value:
+                                        "Główny serwer",
+                                    inline: true
+                                }
+                            )
+                            .setTimestamp()
+                            .setFooter({
+                                text:
+                                    "Służba Więzienna • Logi wypłat"
+                            });
 
-    if (interaction.commandName === "sw-zabierz") {
+                    await logChannel.send({
+                        embeds: [logEmbed]
+                    });
 
-        await interaction.deferReply();
+                }
 
-        const user = interaction.options.getUser("osoba");
-        const amount = interaction.options.getInteger("kwota");
-
-        const reason =
-            interaction.options.getString("powod")
-            || "Potrącenie Służby Więziennej";
-
-        try {
-
-            const before = await getBalance(user.id);
-
-            const result = await removeMoney(
-                user.id,
-                amount,
-                `${reason} | Wystawił: ${interaction.user.tag}`
-            );
-
-            const cashBefore = before.cash ?? 0;
-            const cashAfter = result.cash ?? cashBefore - amount;
-
-            const embed = new EmbedBuilder()
-                .setTitle("💸 POTRĄCENIE")
-                .setDescription(
-                    `Pobrano pieniądze od ${user}.`
-                )
-                .addFields(
-                    {
-                        name: "👤 Osoba",
-                        value: `${user}`,
-                        inline: false
-                    },
-                    {
-                        name: "💸 Potrącono",
-                        value: `-${amount}$`,
-                        inline: true
-                    },
-                    {
-                        name: "💰 Gotówka po potrąceniu",
-                        value: `${cashAfter}$`,
-                        inline: true
-                    },
-                    {
-                        name: "📋 Powód",
-                        value: reason,
-                        inline: false
-                    },
-                    {
-                        name: "👮 Wykonał",
-                        value: `${interaction.user}`,
-                        inline: false
-                    }
-                )
-                .setTimestamp()
-                .setFooter({
-                    text: "Służba Więzienna • System finansowy"
-                });
-
-            await interaction.editReply({
-                embeds: [embed]
-            });
+            }
 
         } catch (error) {
 
-            console.error(error);
-
-            await interaction.editReply(
-                `❌ Nie udało się wykonać potrącenia.\n\n\`${error.message}\``
+            console.error(
+                "❌ Błąd UnbelievaBoat:",
+                error
             );
+
+            let message =
+                "❌ Wystąpił błąd podczas wykonywania wypłaty.";
+
+            if (error.status === 401) {
+
+                message =
+                    "❌ Token UnbelievaBoat jest nieprawidłowy lub wygasł.";
+
+            } else if (error.status === 403) {
+
+                message =
+                    "❌ UnbelievaBoat odrzucił żądanie. Sprawdź uprawnienia API.";
+
+            } else if (error.status === 404) {
+
+                message =
+                    "❌ Nie znaleziono serwera lub konta użytkownika w UnbelievaBoat.";
+
+            } else if (error.status === 429) {
+
+                message =
+                    "⏳ UnbelievaBoat ograniczył liczbę żądań. Spróbuj ponownie za chwilę.";
+
+            }
+
+            if (interaction.deferred) {
+
+                await interaction.editReply({
+                    content: message
+                }).catch(() => {});
+
+            } else {
+
+                await interaction.reply({
+                    content: message,
+                    ephemeral: true
+                }).catch(() => {});
+
+            }
+
         }
 
-        return;
     }
 
 });
@@ -572,22 +591,35 @@ client.on("interactionCreate", async interaction => {
 // BŁĘDY
 // ======================================================
 
+client.on("error", error => {
+
+    console.error(
+        "❌ Discord Client Error:",
+        error
+    );
+
+});
+
 process.on("unhandledRejection", error => {
-    console.error("❌ Unhandled Rejection:", error);
+
+    console.error(
+        "❌ Unhandled Promise Rejection:",
+        error
+    );
+
 });
 
 process.on("uncaughtException", error => {
-    console.error("❌ Uncaught Exception:", error);
+
+    console.error(
+        "❌ Uncaught Exception:",
+        error
+    );
+
 });
 
 // ======================================================
 // START
 // ======================================================
 
-(async () => {
-
-    await registerCommands();
-
-    await client.login(DISCORD_TOKEN);
-
-})();
+client.login(TOKEN);
